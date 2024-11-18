@@ -4,41 +4,16 @@ from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey
 from .fields import OrderField
 from django.template.loader import render_to_string
+from django.utils.text import slugify  # For slug generation
+
+
 """
-we have a Subject the contain courses and every course contain modules
-    - subject has:
-        1. title
-        2. slug
-            * order by title
-    - course has :
-        1. owner(a User)
-        2. subject(a Subject)
-        3. title
-        4. slug
-        5. overview
-        6. created date
-            * order by created (des)
-    - module has :
-        1. course (a course)
-        2. title
-        3. description 
-        4. order
------------------------
-the Content model can be of different types so we use a generic relation to point to the Content object 
-    - Content:
-        1. module (belongs to a module)
-        2. content_type (foreign key to the ContentType) --> used for the generic relation
-        3. object_id (th e key for the elated object)
-        4. item (does not exists in the database but build on the other columns)
-        5. order
-    **note: learn more about generic relation in Django**
------------------------
-the ItemBase model is an abstract model that is inherited in the content types (text, file, image, video)
-    - ItemBase :
-        1. owner (user)
-        *. title, created, updated
-    * the files are uploaded to 'files', the images to 'images and the videos store the urls
-----------------------
+Structure:
+- Subject: Top-level category containing Courses.
+- YearGroup: Represents Nursery to Year 13.
+- ExamBoard: Optional, applicable for certain courses.
+- Course: Linked to Subject and YearGroup, with optional ExamBoard and Course Type.
+- Module, Content, ItemBase: As previously defined.
 """
 
 
@@ -53,17 +28,63 @@ class Subject(models.Model):
         return self.title
 
 
-class Course(models.Model):
-    owner = models.ForeignKey(User, related_name="courses_created", on_delete=models.CASCADE)
-    subject = models.ForeignKey(Subject, related_name="courses", on_delete=models.CASCADE)
-    title = models.CharField(max_length=200)
-    overview = models.TextField()
-    slug = models.CharField(max_length=200, unique=True)
-    created = models.DateTimeField(auto_now_add=True)
-    students = models.ManyToManyField(User, related_name="courses_joined", blank=True)
+class YearGroup(models.Model):
+    name = models.CharField(max_length=50)  # e.g., Nursery, Reception, Year1, ..., Year13
+    slug = models.SlugField(max_length=50, unique=True)
 
     class Meta:
-        ordering = ['-created']
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class ExamBoard(models.Model):
+    name = models.CharField(max_length=50)  # e.g., AQA, Edexcel, OCR
+    slug = models.SlugField(max_length=50, unique=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class Course(models.Model):
+    subject = models.ForeignKey(Subject, related_name="courses", on_delete=models.CASCADE)
+    year_group = models.ForeignKey(YearGroup, related_name="courses", on_delete=models.CASCADE)
+    examboard = models.ForeignKey(ExamBoard, related_name="courses", on_delete=models.CASCADE, null=True, blank=True)
+    COURSE_TYPE_CHOICES = [
+        ('Foundation', 'Foundation'),
+        ('Higher', 'Higher'),
+    ]
+    course_type = models.CharField(
+        max_length=20,
+        choices=COURSE_TYPE_CHOICES,
+        help_text="Select the course type (e.g., Foundation, Higher)",
+        blank=True,
+        null=True
+    )
+    title = models.CharField(max_length=200, blank=True)  # Auto-generated
+    slug = models.SlugField(max_length=200, unique=True, blank=True)  # Auto-generated
+
+    class Meta:
+        unique_together = ('subject', 'year_group', 'examboard', 'course_type')
+        ordering = []
+
+    def save(self, *args, **kwargs):
+        # Generate title from examboard, subject, year_group, and course_type
+        parts = [
+            self.examboard.name if self.examboard else None,
+            self.subject.title,
+            self.year_group.name,
+            self.course_type
+        ]
+        parts = [part for part in parts if part]  # Remove None values
+        self.title = " ".join(parts)
+        # Generate slug from title
+        self.slug = slugify(self.title)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.title
@@ -84,8 +105,11 @@ class Module(models.Model):
 
 class Content(models.Model):
     module = models.ForeignKey(Module, related_name="contents", on_delete=models.CASCADE)
-    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, limit_choices_to={'model__in': (
-        'text', 'video', 'image', 'file')})
+    content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.CASCADE,
+        limit_choices_to={'model__in': ('text', 'video', 'image', 'file')}
+    )
     object_id = models.PositiveIntegerField()
     item = GenericForeignKey('content_type', 'object_id')
     order = OrderField(blank=True, for_fields=['module'])
@@ -95,7 +119,11 @@ class Content(models.Model):
 
 
 class ItemBase(models.Model):
-    owner = models.ForeignKey(User, related_name='%(class)s_related', on_delete=models.CASCADE)
+    owner = models.ForeignKey(
+        User,
+        related_name='%(class)s_related',
+        on_delete=models.CASCADE
+    )
     title = models.CharField(max_length=250)
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
